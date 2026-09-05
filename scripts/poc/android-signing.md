@@ -7,10 +7,12 @@
 | 安装包 ID | `com.carriez.flutter_hbb` | `com.carriez.flutter_hbb.poc` |
 | 启动器/系统应用名称 | RustDesk | Remote Control POC |
 | 无障碍服务名称 | RustDesk Input | Remote Control POC Input |
-| URL scheme | `rustdesk://` | `remote-control-poc://` |
+| URL scheme | `rustdesk://` | `rustdesk://` |
 | 调试开机广播 | `com.carriez.flutter_hbb.DEBUG_BOOT_COMPLETED` | `com.carriez.flutter_hbb.poc.DEBUG_BOOT_COMPLETED` |
 
 这样可以与官方版并存，并让录屏、无障碍、通知等授权对应独立的测试应用。Kotlin namespace 和 JNI 类名保留上游值；它们是代码身份，不是安装包 ID。应用内和部分通知文本暂时仍显示 RustDesk 品牌，正式命名前不做全局替换。
+
+POC 暂时保留上游链接格式，以兼容应用内二维码识别。两版都安装时，系统打开 `rustdesk://` 链接可能提示选择应用；独立链接格式留到完整品牌配置时一并调整。
 
 ## 构建凭据
 

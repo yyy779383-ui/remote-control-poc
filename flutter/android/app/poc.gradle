@@ -22,7 +22,7 @@ def pocKeyPassword = requiredPocEnvironment('REMOTE_CONTROL_POC_KEY_PASSWORD')
 android {
     defaultConfig {
         applicationId 'com.carriez.flutter_hbb.poc'
-        manifestPlaceholders += [appLabel: 'Remote Control POC', inputLabel: 'Remote Control POC Input', linkScheme: 'remote-control-poc']
+        manifestPlaceholders += [appLabel: 'Remote Control POC', inputLabel: 'Remote Control POC Input']
     }
     signingConfigs {
         poc {
