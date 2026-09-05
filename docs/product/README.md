@@ -24,3 +24,4 @@
 - [设备与网络测试矩阵](05-test-matrix.md)
 - [可重复构建计划](06-build-plan.md)
 - [媒体热路径与改造顺序](07-performance-work.md)
+- [第一轮构建与验证记录](08-first-build-validation.md)
