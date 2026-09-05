@@ -75,7 +75,7 @@ try {
         $report.status = 'unexpected_executable'
         throw '可执行文件的原始文件名与 RustDesk 不符，已停止。请使用本项目 CI 生成的完整 Windows 测试包。'
     }
-    if ($versionInfo.FileVersion -match '^\d+(?:\.\d+){1,3}$') {
+    if ($versionInfo.FileVersion -match '^\d+(?:\.\d+){1,3}(?:[+-][0-9A-Za-z.-]+)?$') {
         $report.executable.fileVersion = $versionInfo.FileVersion
     }
 
