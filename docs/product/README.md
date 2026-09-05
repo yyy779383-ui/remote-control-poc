@@ -25,3 +25,4 @@
 - [可重复构建计划](06-build-plan.md)
 - [媒体热路径与改造顺序](07-performance-work.md)
 - [第一轮构建与验证记录](08-first-build-validation.md)
+- [Android 模拟器安装与启动验证](09-android-emulator-validation.md)
