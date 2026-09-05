@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+  <title>远程画质与流畅度测试</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #e5eaf3; background: #101827; font: 14px/1.5 system-ui, "Microsoft YaHei", sans-serif; }
+    header { padding: 14px 20px 10px; border-bottom: 1px solid #344155; }
+    h1 { margin: 0 0 3px; font-size: 20px; }
+    p { margin: 4px 0; }
+    .muted { color: #b6c3d6; }
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin: 12px 0 8px; }
+    label { display: inline-flex; align-items: center; gap: 7px; }
+    select, button { min-height: 36px; border: 1px solid #64748b; border-radius: 5px; padding: 5px 10px; font: inherit; color: inherit; background: #1e2c42; }
+    button { cursor: pointer; }
+    button.primary { background: #1d4ed8; border-color: #3b82f6; }
+    button:focus-visible, select:focus-visible { outline: 3px solid #93c5fd; outline-offset: 2px; }
+    select:disabled { opacity: .65; }
+    .status { font-variant-numeric: tabular-nums; }
+    #scale-warning { color: #fcd68c; }
+    #scale-warning.valid { color: #a7f3d0; }
+    #viewport { overflow: auto; height: max(260px, calc(100dvh - 255px)); padding: 12px; }
+    #frame { position: relative; margin: 0 auto; background: white; }
+    canvas { position: absolute; inset: 0; display: block; transform-origin: 0 0; }
+    footer { padding: 5px 20px 14px; font-size: 12px; color: #b6c3d6; }
+    #presentation-controls { display: none; }
+    body.presentation header, body.presentation footer { display: none; }
+    body.presentation #viewport { height: 100dvh; padding: 0; }
+    body.presentation #presentation-controls { display: flex; gap: 8px; align-items: center; position: fixed; right: 8px; top: 8px; padding: 5px 8px; color: #e5eaf3; background: #101827; border-radius: 5px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>远程画质与流畅度测试</h1>
+    <p class="muted">在被控机打开，远端观察。默认静止；电脑可按 F11 全屏。页面完全离线。</p>
+    <div class="controls">
+      <label>图案尺寸 <select id="resolution"><option value="1280x720">720p · 1280 × 720</option><option value="1920x1080" selected>1080p · 1920 × 1080</option></select></label>
+      <label>显示方式 <select id="sizing"><option value="fit">自动适配窗口</option><option value="native">原始 CSS 尺寸（可滚动）</option></select></label>
+      <label>动画目标 <select id="target"><option value="30">30 帧/秒</option><option value="60" selected>60 帧/秒</option></select></label>
+      <button id="toggle" class="primary" type="button">启动动画</button>
+      <button id="reset" type="button">重置至第 0 帧</button>
+      <button id="present" type="button">只展示图案</button>
+    </div>
+    <p id="dimensions" class="status"></p>
+    <p id="scale-warning" role="status"></p>
+    <p class="status">状态：<span id="state">静止</span> · 本机 rAF：<span id="raf-rate">未启动</span> · 实际绘制：<span id="draw-count">0</span> 次</p>
+    <p class="muted">rAF 只反映此浏览器的回调频率，不是远程呈现 FPS，也不是操作延迟。</p>
+  </header>
+  <main id="viewport" aria-label="测试图案显示区域">
+    <div id="frame"><canvas id="scene" width="1920" height="1080" aria-label="含中英文小字、代码、表格、单像素细线与移动图案的测试画布">浏览器需要支持 Canvas 才能显示测试图案。</canvas></div>
+  </main>
+  <div id="presentation-controls"><span id="presentation-status"></span><button id="leave-presentation" type="button">返回设置</button></div>
+  <footer>清晰度比较要求：源端像素映射 1:1，远程客户端也使用 1:1 显示。暂停后检查小字与红蓝边缘；动画时检查跳帧、拖影及滚动文字。图案帧号不代表已传输或已显示的远程帧数。</footer>
+  <script>
+    "use strict";
+    const byId = (id) => document.getElementById(id);
+    const canvas = byId("scene");
+    const context = canvas.getContext("2d", { alpha: false });
+    const background = document.createElement("canvas");
+    const backdrop = background.getContext("2d", { alpha: false });
+    const viewport = byId("viewport");
+    let running = false;
+    let requestId = 0;
+    let elapsedMs = 0;
+    let elapsedAtStart = 0;
+    let runStart = null;
+    let rafWindowStart = null;
+    let rafIntervals = 0;
+    let drawnFrames = 0;
+    let frameNumber = 0;
+    let lastDrawnFrame = -1;
+
+    function text(ctx, value, x, y, size = 14, color = "#172033", mono = false) {
+      ctx.fillStyle = color;
+      ctx.font = `${size}px ${mono ? 'Consolas, "Courier New", monospace' : '"Microsoft YaHei", system-ui, sans-serif'}`;
+      ctx.fillText(value, x, y);
+    }
+
+    function panel(x, y, width, height, title) {
+      backdrop.fillStyle = "#ffffff";
+      backdrop.fillRect(x, y, width, height);
+      backdrop.strokeStyle = "#cbd5e1";
+      backdrop.strokeRect(x + .5, y + .5, width - 1, height - 1);
+      text(backdrop, title, x + 16, y + 29, 16);
+    }
+
+    function createBackground() {
+      const width = canvas.width;
+      const height = canvas.height;
+      background.width = width;
+      background.height = height;
+      backdrop.fillStyle = "#e9eef5";
+      backdrop.fillRect(0, 0, width, height);
+      text(backdrop, "远程图像测试 / REMOTE QUALITY SCENE", 28, 40, 22);
+      text(backdrop, `${width} × ${height} 源图案像素 · 字号与细线均按源像素绘制`, 28, 66, 14, "#475569");
+      const gap = 16;
+      const column = Math.floor((width - 56 - gap * 2) / 3);
+      const top = 92;
+      const panelHeight = Math.floor(height * .43);
+      const left = 28;
+      const middle = left + column + gap;
+      const right = middle + column + gap;
+      panel(left, top, column, panelHeight, "01  中英文小字 / Text");
+      [9, 12, 14].forEach((size, index) => {
+        const y = top + 62 + index * 72;
+        text(backdrop, `${size}px：远程协助，清晰看见每一处细节。`, left + 16, y, size);
+        text(backdrop, `${size}px: The quick brown fox jumps. 0123456789`, left + 16, y + 22, size);
+      });
+      panel(middle, top, column, panelHeight, "02  等宽代码 / Table");
+      const code = ["const fps = 60;", "if (frame.ready && !paused) {", "  render(frame); // 清晰、稳定", "}", "O0  I1l  {} [] () <> != ==="];
+      code.forEach((line, index) => text(backdrop, line, middle + 16, top + 59 + index * 23, 12, "#172033", true));
+      const tableY = top + 190;
+      const cell = Math.floor((column - 32) / 3);
+      const rows = [["设备 / Device", "分辨率", "目标 FPS"], ["Windows", "1920×1080", "60"], ["Android", "1280×720", "30"]];
+      rows.forEach((row, rowIndex) => row.forEach((value, cellIndex) => {
+        const x = middle + 16 + cellIndex * cell;
+        const y = tableY + rowIndex * 27;
+        backdrop.strokeStyle = "#94a3b8";
+        backdrop.strokeRect(x + .5, y + .5, cell, 27);
+        text(backdrop, value, x + 7, y + 18, 12, "#172033", true);
+      }));
+      panel(right, top, column, panelHeight, "03  单像素边缘 / Chroma");
+      const stripeWidth = column - 32;
+      const stripeX = right + 16;
+      for (let x = 0; x < stripeWidth; x++) {
+        backdrop.fillStyle = x % 2 ? "#0000ff" : "#ff0000";
+        backdrop.fillRect(stripeX + x, top + 50, 1, 52);
+        backdrop.fillStyle = x % 2 ? "#ffffff" : "#000000";
+        backdrop.fillRect(stripeX + x, top + 150, 1, 44);
+      }
+      for (let y = 0; y < 32; y++) {
+        backdrop.fillStyle = y % 2 ? "#0000ff" : "#ff0000";
+        backdrop.fillRect(stripeX, top + 108 + y, stripeWidth, 1);
+      }
+      text(backdrop, "红蓝：观察色边混合；黑白：观察细线丢失", stripeX, top + 219, 12);
+      text(backdrop, "彩色小字 Red / Blue 0123456789", stripeX, top + 246, 12, "#ff0000");
+      text(backdrop, "彩色小字 Red / Blue 0123456789", stripeX, top + 267, 12, "#0000ff");
+      const motionY = top + panelHeight + 18;
+      panel(28, motionY, width - 56, height - motionY - 28, "04  移动与滚动 / Motion · 暂停后保持同一帧");
+      text(backdrop, "移动位置由图案帧号决定；重置后可重复。刷新不足时帧号可能跳过。", 44, motionY + 55, 12, "#475569");
+    }
+
+    function paint() {
+      const width = canvas.width;
+      const height = canvas.height;
+      const motionY = 92 + Math.floor(height * .43) + 18;
+      const target = Number(byId("target").value);
+      const time = frameNumber / target;
+      context.drawImage(background, 0, 0);
+      const laneX = 44;
+      const laneY = motionY + 78;
+      const laneWidth = width - 88;
+      context.fillStyle = "#e2e8f0";
+      context.fillRect(laneX, laneY, laneWidth, 42);
+      for (let x = 0; x < laneWidth; x += 80) {
+        context.fillStyle = "#94a3b8";
+        context.fillRect(laneX + x, laneY, 1, 42);
+      }
+      const travel = laneWidth - 42;
+      const position = (time * 240) % (travel * 2);
+      context.fillStyle = "#1d4ed8";
+      context.fillRect(laneX + Math.floor(position <= travel ? position : travel * 2 - position), laneY, 42, 42);
+      const scrollY = laneY + 60;
+      const scrollHeight = Math.max(40, height - scrollY - 82);
+      context.save();
+      context.beginPath();
+      context.rect(laneX, scrollY, laneWidth, scrollHeight);
+      context.clip();
+      context.fillStyle = "#f1f5f9";
+      context.fillRect(laneX, scrollY, laneWidth, scrollHeight);
+      const offset = Math.floor(time * 48) % 28;
+      const firstLine = Math.floor(time * 48 / 28);
+      for (let row = 0; row <= Math.ceil(scrollHeight / 28); row++) {
+        const line = String((firstLine + row) % 1000).padStart(3, "0");
+        text(context, `${line}  平稳滚动 / Smooth scrolling — 0123456789 — 看文字边缘与停顿`, laneX + 12, scrollY + row * 28 + 20 - offset, 14, "#172033", true);
+      }
+      context.restore();
+      text(context, `图案帧号 ${String(frameNumber).padStart(8, "0")}  |  时间 ${time.toFixed(2)} s  |  目标 ${target} fps`, laneX, height - 47, 20, "#172033", true);
+    }
+
+    function updateSizing() {
+      const fit = byId("sizing").value === "fit";
+      const padding = document.body.classList.contains("presentation") ? 0 : 24;
+      const scale = fit ? Math.min(1, (viewport.clientWidth - padding) / canvas.width, (viewport.clientHeight - padding) / canvas.height) : 1;
+      const safeScale = Math.max(.01, scale);
+      const frame = byId("frame");
+      frame.style.width = `${canvas.width * safeScale}px`;
+      frame.style.height = `${canvas.height * safeScale}px`;
+      canvas.style.transform = `scale(${safeScale})`;
+      const bounds = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const pinch = window.visualViewport ? window.visualViewport.scale : 1;
+      const pixelScale = bounds.width / canvas.width * dpr * pinch;
+      byId("dimensions").textContent = `源图案 ${canvas.width} × ${canvas.height} px · 实际渲染 ${bounds.width.toFixed(1)} × ${bounds.height.toFixed(1)} CSS px · 图案缩放 ${(safeScale * 100).toFixed(1)}% · devicePixelRatio ${dpr.toFixed(3)} · 手势缩放 ${pinch.toFixed(2)}`;
+      const oneToOne = Math.abs(safeScale - 1) < .0001 && Math.abs(dpr - 1) < .0001 && Math.abs(pinch - 1) < .0001;
+      const warning = byId("scale-warning");
+      warning.className = oneToOne ? "valid" : "";
+      warning.textContent = oneToOne
+        ? "源端 1:1 像素映射；还需确认远程客户端使用 1:1 显示，才能比较单像素清晰度。"
+        : `当前不是未经缩放的 1:1 显示（约 ${pixelScale.toFixed(3)} 设备像素 / 源像素），单像素清晰度测量无效；仍可观察流畅度。请选择原始尺寸，并检查浏览器缩放与系统显示缩放。`;
+      byId("presentation-status").textContent = `${bounds.width.toFixed(0)} × ${bounds.height.toFixed(0)} CSS px · DPR ${dpr.toFixed(2)} · ${oneToOne ? "源端 1:1" : "非 1:1，清晰度测量无效"}`;
+    }
+
+    function pause(reason = "已暂停") {
+      running = false;
+      cancelAnimationFrame(requestId);
+      byId("toggle").textContent = "继续动画";
+      byId("state").textContent = reason;
+      byId("target").disabled = false;
+      byId("raf-rate").textContent = "已暂停";
+    }
+
+    function tick(timestamp) {
+      if (!running) return;
+      if (runStart === null) runStart = timestamp;
+      elapsedMs = elapsedAtStart + timestamp - runStart;
+      if (rafWindowStart === null) {
+        rafWindowStart = timestamp;
+      } else {
+        rafIntervals++;
+        const sampleDuration = timestamp - rafWindowStart;
+        if (sampleDuration >= 1000) {
+          byId("raf-rate").textContent = `${(rafIntervals * 1000 / sampleDuration).toFixed(1)} 回调/秒（本机）`;
+          byId("draw-count").textContent = String(drawnFrames);
+          rafIntervals = 0;
+          rafWindowStart = timestamp;
+        }
+      }
+      frameNumber = Math.floor(elapsedMs * Number(byId("target").value) / 1000);
+      if (frameNumber !== lastDrawnFrame) {
+        paint();
+        drawnFrames++;
+        lastDrawnFrame = frameNumber;
+      }
+      requestId = requestAnimationFrame(tick);
+    }
+
+    function reset() {
+      pause("静止 · 第 0 帧");
+      elapsedMs = 0;
+      frameNumber = 0;
+      drawnFrames = 0;
+      lastDrawnFrame = -1;
+      byId("toggle").textContent = "启动动画";
+      byId("draw-count").textContent = "0";
+      byId("raf-rate").textContent = "未启动";
+      paint();
+    }
+
+    byId("toggle").addEventListener("click", () => {
+      if (running) {
+        pause();
+        byId("draw-count").textContent = String(drawnFrames);
+        return;
+      }
+      running = true;
+      runStart = null;
+      elapsedAtStart = elapsedMs;
+      rafWindowStart = null;
+      rafIntervals = 0;
+      byId("toggle").textContent = "暂停动画";
+      byId("state").textContent = "动画中";
+      byId("target").disabled = true;
+      byId("raf-rate").textContent = "采样中…";
+      requestId = requestAnimationFrame(tick);
+    });
+    byId("reset").addEventListener("click", reset);
+    byId("target").addEventListener("change", reset);
+    byId("resolution").addEventListener("change", () => {
+      const [width, height] = byId("resolution").value.split("x").map(Number);
+      canvas.width = width;
+      canvas.height = height;
+      createBackground();
+      reset();
+      updateSizing();
+    });
+    byId("sizing").addEventListener("change", updateSizing);
+    byId("present").addEventListener("click", () => {
+      document.body.classList.add("presentation");
+      updateSizing();
+      byId("leave-presentation").focus();
+    });
+    byId("leave-presentation").addEventListener("click", () => {
+      document.body.classList.remove("presentation");
+      updateSizing();
+      byId("present").focus();
+    });
+    window.addEventListener("resize", updateSizing);
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", updateSizing);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden && running) pause("页面转入后台，已自动暂停");
+    });
+    createBackground();
+    reset();
+    updateSizing();
+  </script>
+</body>
+</html>
