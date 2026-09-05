@@ -25,7 +25,7 @@
 | Android 真机安装与控制 | 未测试 | 用户当前不便连接真机，不以模拟器结果代替 |
 | 双设备画质/流畅度 | 未测试 | 尚无本轮端到端实测数据 |
 
-后续已完成 MuMu 上的 APK 安装和界面启动检查，权限与实际远控仍待验证；详见[Android 模拟器记录](09-android-emulator-validation.md)，不改变上述真机测试状态。
+后续已完成 MuMu 上的 APK 安装和界面启动检查，用户手动授权后也已确认权限生效；实际远控仍待验证。详见[Android 模拟器记录](09-android-emulator-validation.md)，不改变上述真机测试状态。
 
 ## Windows 成品核验
 
