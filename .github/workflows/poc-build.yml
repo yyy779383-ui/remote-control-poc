@@ -183,9 +183,22 @@ jobs:
             --triplet x64-windows-static \
             --x-install-root="$VCPKG_ROOT/installed"
 
-      - name: Type-check codec benchmark
+      - name: Build and test codec benchmark
         shell: bash
-        run: cargo check --package scrap --example benchmark --features hwcodec
+        run: |
+          cargo test --locked --release --package scrap --example benchmark --features hwcodec
+          cargo build --locked --release --package scrap --example benchmark --features hwcodec
+          ./target/release/examples/benchmark.exe --help
+
+      - name: Upload Windows performance tools
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: poc-windows-performance-tools
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            target/release/examples/benchmark.exe
+            scripts/poc/benchmark.md
 
       - name: Build Windows bundle
         shell: pwsh
@@ -323,27 +336,62 @@ jobs:
           cp ./target/aarch64-linux-android/release/liblibrustdesk.so \
             ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
 
-      - name: Build APK without production signing
+      - name: Restore Android test signing
+        shell: bash
+        env:
+          POC_KEYSTORE_BASE64: ${{ secrets.ANDROID_POC_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$POC_KEYSTORE_BASE64" || { echo "Android POC keystore secret is missing" >&2; exit 1; }
+          umask 077
+          printf '%s' "$POC_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/remote-control-poc.p12"
+
+      - name: Build isolated Android POC with stable test signing
         shell: bash
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+          REMOTE_CONTROL_POC: 'true'
+          REMOTE_CONTROL_POC_KEYSTORE_PATH: ${{ runner.temp }}/remote-control-poc.p12
+          REMOTE_CONTROL_POC_STORE_PASSWORD: ${{ secrets.ANDROID_POC_STORE_PASSWORD }}
+          REMOTE_CONTROL_POC_KEY_PASSWORD: ${{ secrets.ANDROID_POC_KEY_PASSWORD }}
+          REMOTE_CONTROL_POC_KEY_ALIAS: ${{ secrets.ANDROID_POC_KEY_ALIAS }}
         run: |
           export PATH="${JAVA_HOME}/bin:${PATH}"
           sed -i 's/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g' ./flutter/android/gradle.properties
-          sed -i 's/signingConfigs.release/signingConfigs.debug/g' ./flutter/android/app/build.gradle
           cp "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
             ./flutter/android/app/src/main/jniLibs/arm64-v8a/
           pushd flutter
-          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          flutter build apk --release --target-platform android-arm64 --split-per-abi --build-number "${GITHUB_RUN_NUMBER}"
           popd
           mv ./flutter/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
             ./rustdesk-poc-arm64-v8a.apk
 
-      - name: Upload Android APK with ephemeral test signing
+      - name: Verify Android package and signature
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+        run: |
+          export PATH="${JAVA_HOME}/bin:${PATH}"
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          "$build_tools/apksigner" verify --verbose --print-certs rustdesk-poc-arm64-v8a.apk > poc-android-certificate.txt
+          "$build_tools/aapt" dump badging rustdesk-poc-arm64-v8a.apk > poc-android-package.txt
+          grep -F "package: name='com.carriez.flutter_hbb.poc'" poc-android-package.txt
+          grep -F "application-label:'Remote Control POC'" poc-android-package.txt
+          sha256sum rustdesk-poc-arm64-v8a.apk > poc-android-sha256.txt
+
+      - name: Remove temporary signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/remote-control-poc.p12"
+
+      - name: Upload Android APK with stable test signing
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: poc-android-arm64-test-signed
           if-no-files-found: error
           retention-days: 7
-          path: rustdesk-poc-arm64-v8a.apk
+          path: |
+            rustdesk-poc-arm64-v8a.apk
+            poc-android-certificate.txt
+            poc-android-package.txt
+            poc-android-sha256.txt

@@ -1,3 +1,11 @@
+# Remote Control POC
+
+Windows / Android 远程控制质量验证项目，基于 RustDesk 1.5.0，沿用 AGPL-3.0 许可证。这是独立实验分支，尚未发布正式产品。
+
+[项目计划](docs/product/README.md) · [画质与延迟标准](docs/product/02-quality-gates.md) · [测试构建](../../actions/workflows/poc-build.yml) · [性能工具](scripts/poc/benchmark.md)
+
+以下保留上游 RustDesk 的项目介绍与构建说明。
+
 <p align="center">
   <img src="res/logo-header.svg" alt="RustDesk - Your remote desktop"><br>
   <a href="#raw-steps-to-build">Build</a> •

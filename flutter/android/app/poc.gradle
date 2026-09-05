@@ -1,0 +1,38 @@
+def requiredPocEnvironment = { String name ->
+    def value = System.getenv(name)
+    if (value == null || value.isEmpty()) {
+        throw new GradleException("POC signing requires environment variable ${name}.")
+    }
+    value
+}
+
+def pocKeystore = new File(requiredPocEnvironment('REMOTE_CONTROL_POC_KEYSTORE_PATH'))
+if (!pocKeystore.isAbsolute() || !pocKeystore.isFile()) {
+    throw new GradleException('REMOTE_CONTROL_POC_KEYSTORE_PATH must be an absolute path to an existing keystore.')
+}
+def repositoryDirectory = rootProject.projectDir.parentFile.parentFile.canonicalFile
+if (pocKeystore.canonicalFile.toPath().startsWith(repositoryDirectory.toPath())) {
+    throw new GradleException('Keep the POC keystore outside the source repository, for example in RUNNER_TEMP.')
+}
+
+def pocStorePassword = requiredPocEnvironment('REMOTE_CONTROL_POC_STORE_PASSWORD')
+def pocKeyAlias = requiredPocEnvironment('REMOTE_CONTROL_POC_KEY_ALIAS')
+def pocKeyPassword = requiredPocEnvironment('REMOTE_CONTROL_POC_KEY_PASSWORD')
+
+android {
+    defaultConfig {
+        applicationId 'com.carriez.flutter_hbb.poc'
+        manifestPlaceholders += [appLabel: 'Remote Control POC', inputLabel: 'Remote Control POC Input', linkScheme: 'remote-control-poc']
+    }
+    signingConfigs {
+        poc {
+            storeFile pocKeystore
+            storePassword pocStorePassword
+            keyAlias pocKeyAlias
+            keyPassword pocKeyPassword
+        }
+    }
+    buildTypes.configureEach {
+        signingConfig signingConfigs.poc
+    }
+}

@@ -181,6 +181,9 @@ fn main() -> ResultType<()> {
     }
     let selection = CodecSelection::parse(&args.flag_codec)?;
 
+    // Isolate probe caches before capture or codec paths load shared configuration.
+    *hbb_common::config::APP_NAME.write().unwrap() = "RustDeskCodecBenchmark".to_owned();
+
     let mut displays = Display::all().context("failed to enumerate displays")?;
     if displays.is_empty() {
         bail!("no displays available");
@@ -603,6 +606,10 @@ fn run_hwcodec(
 ) -> ResultType<()> {
     use scrap::CodecFormat;
 
+    if selection.includes(CodecSelection::H264) || selection.includes(CodecSelection::H265) {
+        hw::initialize()?;
+    }
+
     for (selected, format, name) in [
         (CodecSelection::H264, CodecFormat::H264, "h264"),
         (CodecSelection::H265, CodecFormat::H265, "h265"),
@@ -679,6 +686,17 @@ mod hw {
     };
 
     use super::*;
+
+    pub fn initialize() -> ResultType<()> {
+        use scrap::hwcodec::{check_available_hwcodec, HwCodecConfig};
+
+        println!("Probing hardware codecs; this may take several seconds.");
+        let config = check_available_hwcodec();
+        let _: HwCodecConfig =
+            serde_json::from_str(&config).context("hardware codec probe returned invalid JSON")?;
+        HwCodecConfig::set(config);
+        Ok(())
+    }
 
     pub fn test_codec(
         capturer: &mut Capturer,
@@ -813,5 +831,126 @@ mod hw {
             pipeline_elapsed,
             timings,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timing_percentiles_use_nearest_rank_on_unsorted_samples() {
+        let samples: Vec<_> = (1..=100).rev().map(Duration::from_millis).collect();
+        let stats = TimingStats::from_samples(&samples);
+
+        assert_eq!(stats.count, 100);
+        assert_eq!(stats.total_ms, 5050.0);
+        assert_eq!(stats.avg_ms, 50.5);
+        assert_eq!(stats.p50_ms, 50.0);
+        assert_eq!(stats.p95_ms, 95.0);
+        assert_eq!(stats.p99_ms, 99.0);
+        assert_eq!(stats.max_ms, 100.0);
+        assert_eq!(samples[0], Duration::from_millis(100));
+    }
+
+    #[test]
+    fn timing_percentiles_handle_empty_and_single_samples() {
+        let empty = TimingStats::from_samples(&[]);
+        assert_eq!(empty.count, 0);
+        for value in [
+            empty.total_ms,
+            empty.avg_ms,
+            empty.p50_ms,
+            empty.p95_ms,
+            empty.p99_ms,
+            empty.max_ms,
+        ] {
+            assert_eq!(value, 0.0);
+        }
+
+        let single = TimingStats::from_samples(&[Duration::from_millis(7)]);
+        assert_eq!(single.count, 1);
+        for value in [
+            single.total_ms,
+            single.avg_ms,
+            single.p50_ms,
+            single.p95_ms,
+            single.p99_ms,
+            single.max_ms,
+        ] {
+            assert_eq!(value, 7.0);
+        }
+    }
+
+    #[test]
+    fn report_distinguishes_submitted_frames_packets_and_decoded_frames() {
+        let packets = vec![
+            EncodedPacket {
+                data: vec![0; 100],
+                key: true,
+            },
+            EncodedPacket {
+                data: vec![0; 300],
+                key: false,
+            },
+            EncodedPacket {
+                data: vec![0; 200],
+                key: true,
+            },
+        ];
+        let timings = TimingSamples {
+            capture: vec![Duration::from_millis(4); 2],
+            capture_wait: vec![Duration::from_millis(30); 5],
+            convert: vec![Duration::from_millis(2); 2],
+            encode: vec![Duration::from_millis(3); 2],
+            decode: vec![Duration::from_millis(1); 3],
+            decode_flush: Some(Duration::from_millis(2)),
+        };
+        let report = build_report(
+            "vp9",
+            "test",
+            &packets,
+            2,
+            2,
+            1,
+            Duration::from_secs(2),
+            timings,
+        );
+
+        assert_eq!(report.submitted_frames, 2);
+        assert_eq!(report.encoded_packets, 3);
+        assert_eq!(report.decoded_frames, 2);
+        assert_eq!(report.decode_flush_frames, 1);
+        assert_eq!(report.bytes, 600);
+        assert_eq!(report.average_bytes_per_frame, 300.0);
+        assert_eq!(report.submitted_fps, 1.0);
+        assert_eq!(report.packet_fps, 1.5);
+        assert!((report.megabits_per_second - 0.0024).abs() < 1e-12);
+        assert_eq!(report.keyframes, 2);
+        assert_eq!(report.capture_timeouts, 5);
+        assert_eq!(report.capture.count, 2);
+        assert_eq!(report.capture_wait.count, 5);
+        assert_eq!(report.decode.count, 3);
+        assert_eq!(report.decode_flush.unwrap().count, 1);
+    }
+
+    #[test]
+    fn empty_report_has_finite_rates() {
+        let report = build_report(
+            "vp9",
+            "test",
+            &[],
+            0,
+            0,
+            0,
+            Duration::ZERO,
+            TimingSamples::default(),
+        );
+
+        assert_eq!(report.average_bytes_per_frame, 0.0);
+        assert_eq!(report.megabits_per_second, 0.0);
+        assert_eq!(report.submitted_fps, 0.0);
+        assert_eq!(report.packet_fps, 0.0);
+        assert!(report.decode_flush.is_none());
     }
 }
